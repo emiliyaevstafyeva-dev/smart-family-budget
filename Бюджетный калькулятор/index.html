@@ -490,6 +490,17 @@ function runSimulation(chronology, dailyExpenses) {
     warnings.push({ key, ...payload });
   }
 
+  function nextIncomeKeyAfter(key) {
+    const n = incomeEvents.find(e => e.key > key);
+    return n ? n.key : null;
+  }
+
+  function isDueBeforeNextIncome(ob, incKey, nextKey) {
+    if (ob.key <= incKey) return false;
+    if (nextKey === null) return true;
+    return ob.key < nextKey;
+  }
+
   function poolRemaining(inc, ob, currentRemaining) {
     const pool = incomeEvents.filter(e => e.key >= inc.key && e.key <= ob.key);
     return pool.reduce((sum, p) => {
@@ -499,11 +510,33 @@ function runSimulation(chronology, dailyExpenses) {
     }, 0);
   }
 
+  function recordAllocation(rawAllocations, ob, prevRes, part, mandatory) {
+    const newRes = money(prevRes + part);
+    reserves[ob.id] = newRes;
+    rawAllocations.push({
+      paymentId: ob.id,
+      name: ob.name,
+      dueYear: ob.year,
+      dueMonth: ob.month,
+      dueDay: ob.day,
+      dueKey: ob.key,
+      amount: part,
+      previousReserve: prevRes,
+      newReserve: newRes,
+      total: ob.amount,
+      kind: ob.kind,
+      targetMonthKey: ob.mKey,
+      mandatory
+    });
+  }
+
   function trimForMinFree(rawAllocations, remainingHolder, inc) {
     let remaining = remainingHolder.val;
-    if (remaining >= MIN_FREE_CASH - 0.01 || !rawAllocations.length) return;
+    if (remaining >= MIN_FREE_CASH - 0.01) return;
     let deficit = money(MIN_FREE_CASH - remaining);
-    const byFurthest = [...rawAllocations].sort((a, b) => b.dueKey - a.dueKey);
+    const byFurthest = rawAllocations
+      .filter(a => !a.mandatory)
+      .sort((a, b) => b.dueKey - a.dueKey);
     for (const a of byFurthest) {
       if (deficit <= 0.005) break;
       const trim = money(Math.min(a.amount, deficit));
@@ -514,15 +547,16 @@ function runSimulation(chronology, dailyExpenses) {
       remaining = money(remaining + trim);
       deficit = money(deficit - trim);
     }
-    rawAllocations.splice(0, rawAllocations.length, ...rawAllocations.filter(a => a.amount > 0.005));
     remainingHolder.val = remaining;
+    const kept = rawAllocations.filter(a => a.amount > 0.005 || a.mandatory);
+    rawAllocations.splice(0, rawAllocations.length, ...kept.filter(a => a.amount > 0.005));
     if (remaining < MIN_FREE_CASH - 0.01) {
-      addWarning(`conflict-${inc.id}`, {
+      addWarning(`minfree-${inc.id}`, {
         day: inc.day,
         monthKey: inc.mKey,
         message:
-          `Недостаточно доходов, чтобы одновременно сохранить свободный остаток ${rub(MIN_FREE_CASH)} ` +
-          `и полностью профинансировать обязательные платежи после «${inc.name}».`
+          `После «${inc.name}» свободный остаток ${rub(remaining)} меньше минимальных ${rub(MIN_FREE_CASH)}. ` +
+          `Обязательные платежи до следующего дохода уже обеспечены в приоритете.`
       });
     }
   }
@@ -537,12 +571,54 @@ function runSimulation(chronology, dailyExpenses) {
     const reserveAtStart = {};
     obligations.forEach(o => { reserveAtStart[o.id] = getReserve(o.id); });
 
+    const nextKey = nextIncomeKeyAfter(inc.key);
     const rawAllocations = [];
-    const upcoming = obligations
-      .filter(o => !paid.has(o.id) && o.key >= inc.key && getReserve(o.id) < o.amount - 0.005)
+
+    const mandatoryObs = obligations
+      .filter(o => !paid.has(o.id) && isDueBeforeNextIncome(o, inc.key, nextKey) && getReserve(o.id) < o.amount - 0.005)
       .sort((a, b) => a.key - b.key || a.priority - b.priority);
 
-    upcoming.forEach(ob => {
+    let mandatoryNeedFromIncome = 0;
+    mandatoryObs.forEach(ob => {
+      mandatoryNeedFromIncome = money(mandatoryNeedFromIncome + money(ob.amount - (reserveAtStart[ob.id] || 0)));
+    });
+
+    mandatoryObs.forEach(ob => {
+      const prevRes = getReserve(ob.id);
+      const need = money(ob.amount - prevRes);
+      if (need <= 0.005 || remaining <= 0.005) return;
+      const part = money(Math.min(need, remaining));
+      remaining = money(remaining - part);
+      recordAllocation(rawAllocations, ob, prevRes, part, true);
+    });
+
+    const mandatoryShortfall = mandatoryObs.reduce((s, ob) => {
+      const gap = money(ob.amount - getReserve(ob.id));
+      return gap > 0.005 ? money(s + gap) : s;
+    }, 0);
+
+    if (mandatoryShortfall > 0.005) {
+      addWarning(`gap-${inc.id}`, {
+        day: inc.day,
+        monthKey: inc.mKey,
+        message:
+          `Недостаточно средств до следующего дохода после «${inc.name}». ` +
+          `Обязательные платежи до следующего дохода: ${rub(mandatoryNeedFromIncome)}. ` +
+          `Доступно для распределения: ${rub(usable)}. ` +
+          `Не хватает: ${rub(mandatoryShortfall)}.`
+      });
+    }
+
+    const optionalObs = obligations
+      .filter(o =>
+        !paid.has(o.id) &&
+        o.key >= inc.key &&
+        !isDueBeforeNextIncome(o, inc.key, nextKey) &&
+        getReserve(o.id) < o.amount - 0.005
+      )
+      .sort((a, b) => a.key - b.key || a.priority - b.priority);
+
+    optionalObs.forEach(ob => {
       const prevRes = getReserve(ob.id);
       const need = money(ob.amount - prevRes);
       const totalRem = poolRemaining(inc, ob, remaining);
@@ -552,23 +628,8 @@ function runSimulation(chronology, dailyExpenses) {
       part = money(Math.min(part, need, remaining));
       if (part <= 0.005) return;
 
-      const newRes = money(prevRes + part);
-      reserves[ob.id] = newRes;
       remaining = money(remaining - part);
-      rawAllocations.push({
-        paymentId: ob.id,
-        name: ob.name,
-        dueYear: ob.year,
-        dueMonth: ob.month,
-        dueDay: ob.day,
-        dueKey: ob.key,
-        amount: part,
-        previousReserve: prevRes,
-        newReserve: newRes,
-        total: ob.amount,
-        kind: ob.kind,
-        targetMonthKey: ob.mKey
-      });
+      recordAllocation(rawAllocations, ob, prevRes, part, false);
     });
 
     const remainingHolder = { val: remaining };
@@ -579,7 +640,8 @@ function runSimulation(chronology, dailyExpenses) {
     const displayItems = obligations
       .filter(o => !paid.has(o.id) && o.key >= inc.key && (
         rawAllocations.some(a => a.paymentId === o.id) ||
-        (reserveAtStart[o.id] || 0) > 0.005
+        (reserveAtStart[o.id] || 0) > 0.005 ||
+        isDueBeforeNextIncome(o, inc.key, nextKey)
       ))
       .sort((a, b) => a.key - b.key || a.priority - b.priority)
       .map(o => {
@@ -587,6 +649,8 @@ function runSimulation(chronology, dailyExpenses) {
         const prev = money(reserveAtStart[o.id] || 0);
         const add = alloc ? alloc.amount : 0;
         const after = alloc ? alloc.newReserve : prev;
+        const mandatory = isDueBeforeNextIncome(o, inc.key, nextKey);
+        const fullyFunded = after >= o.amount - 0.005;
         return {
           paymentId: o.id,
           name: o.name,
@@ -601,9 +665,21 @@ function runSimulation(chronology, dailyExpenses) {
           kind: o.kind,
           targetMonthKey: o.mKey,
           remainingToFund: money(Math.max(0, o.amount - after)),
-          fullyFunded: after >= o.amount - 0.005
+          fullyFunded,
+          mandatory,
+          dueBeforeNextIncome: mandatory
         };
       });
+
+    displayItems.filter(o => o.dueBeforeNextIncome && !o.fullyFunded).forEach(o => {
+      addWarning(`under-${inc.id}-${o.paymentId}`, {
+        day: inc.day,
+        monthKey: inc.mKey,
+        message:
+          `После «${inc.name}» платёж «${o.name}» (${fmtAbs(o.dueYear, o.dueMonth, o.dueDay)}) ` +
+          `не обеспечен полностью: ${rub(o.newReserve)} / ${rub(o.total)}.`
+      });
+    });
 
     const card = {
       id: inc.id,
@@ -622,7 +698,8 @@ function runSimulation(chronology, dailyExpenses) {
       remaining,
       totalReserve: rawAllocations.reduce((s, a) => s + a.amount, 0),
       allocations: displayItems,
-      freeCash: freeCash()
+      freeCash: freeCash(),
+      nextIncomeKey: nextKey
     };
     incomeCards.push(card);
 
@@ -671,7 +748,9 @@ function runSimulation(chronology, dailyExpenses) {
           addWarning(`pay-${payment.id}`, {
             day: payment.day,
             monthKey: payment.mKey,
-            message: `К оплате «${payment.name}» (${fmtAbs(payment.year, payment.month, payment.day)}) не зарезервировано ${rub(shortage)}.`
+            message:
+              `К дате оплаты «${payment.name}» (${fmtAbs(payment.year, payment.month, payment.day)}) ` +
+              `резерв ${rub(reserved)} из ${rub(payment.amount)} — недофинансировано ${rub(shortage)}.`
           });
         }
         cash = money(cash - payment.amount);
@@ -853,13 +932,23 @@ function calculate(){
 }
 
 function renderAllocItem(a){
+  const needBefore=money(a.total-a.previousReserve);
   const addLabel=a.amount>0.005?`+ ${rub(a.amount)}`:'0 ₽';
-  const status=a.fullyFunded
-    ? '<div class="allocDetail"><b>Статус: платёж полностью обеспечен</b></div>'
-    : `<div class="allocDetail">Осталось накопить: <b>${rub(a.remainingToFund)}</b></div>`;
+  let status;
+  if(a.fullyFunded){
+    status=a.dueBeforeNextIncome
+      ? '<div class="allocDetail"><b>Статус: платёж полностью обеспечен к сроку</b></div>'
+      : '<div class="allocDetail"><b>Статус: платёж полностью обеспечен</b></div>';
+  }else if(a.dueBeforeNextIncome){
+    status=`<div class="allocDetail"><b>Статус: недофинансирован к следующему доходу</b></div>`;
+  }else{
+    status=`<div class="allocDetail">Осталось накопить: <b>${rub(a.remainingToFund)}</b></div>`;
+  }
   return `<li>
     <div class="allocTitle">${esc(a.name)} — оплатить до ${fmtAbs(a.dueYear,a.dueMonth,a.dueDay)}</div>
     <div class="allocDetail">Было в резерве: <b>${rub(a.previousReserve)}</b></div>
+    <div class="allocDetail">Нужно всего: <b>${rub(a.total)}</b></div>
+    <div class="allocDetail">Осталось обеспечить: <b>${rub(needBefore)}</b></div>
     <div class="allocDetail">Добавить из этой зарплаты: <b>${addLabel}</b></div>
     <div class="allocDetail">После распределения: <b>${rub(a.newReserve)} / ${rub(a.total)}</b></div>
     ${status}
@@ -889,7 +978,8 @@ function renderPlan(result){
           return `<p class="sub">${title}:</p><ul class="alloc">${byMonth[mk].map(renderAllocItem).join('')}</ul>`;
         }).join('')
       : '';
-    const warn=result.warnings.some(w=>w.monthKey===src.mKey && w.day===src.day);
+    const mandatoryFail=src.allocations.some(a=>a.dueBeforeNextIncome&&!a.fullyFunded);
+    const warn=result.warnings.some(w=>w.monthKey===src.mKey && w.day===src.day)||mandatoryFail;
     const free=src.remaining;
     const daily=snap?snap.dailyLimit:0;
     const until=snap&&snap.untilDay?fmtDay(snap.untilDay):'конца месяца';
@@ -940,7 +1030,7 @@ function renderStatus(result, snap, mEnd){
   const uniq=[];const seen=new Set();
   result.warnings.forEach(w=>{const t=w.message||'';if(t&&!seen.has(t)){seen.add(t);uniq.push(t)}});
   const w=document.getElementById('warningBox');
-  w.innerHTML=uniq.length?`<div class="status bad"><strong>Нужно обратить внимание:</strong><ul class="warnings">${uniq.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>`:'<div class="status good">По введенным данным обязательные платежи распределяются между доходами с учётом минимума 10 000 ₽ свободных.</div>';
+  w.innerHTML=uniq.length?`<div class="status bad"><strong>Нужно обратить внимание:</strong><ul class="warnings">${uniq.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>`:'<div class="status good">Обязательные платежи до следующего дохода обеспечиваются полностью; более поздние — частями из нескольких поступлений.</div>';
 }
 
 /* =============================================================
