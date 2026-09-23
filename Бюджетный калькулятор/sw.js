@@ -1,7 +1,8 @@
-const CACHE = 'smart-budget-v3';
+const CACHE = 'smart-budget-v4';
 const ASSETS = [
   './',
   './index.html',
+  './budget-core.js',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png',

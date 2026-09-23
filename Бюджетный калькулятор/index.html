@@ -41,7 +41,9 @@ body{
 }
 button,input{font:inherit;font-size:16px}
 .wrap{width:min(1240px,calc(100% - 28px));margin:28px auto 60px}
-.header{margin-bottom:20px}.header h1{margin:0 0 8px;font-size:clamp(28px,4vw,42px);line-height:1.1}.header p{margin:0;color:var(--muted);max-width:900px}
+.header{margin-bottom:20px}.header-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:8px}.header h1{margin:0;font-size:clamp(28px,4vw,42px);line-height:1.1}.header p{margin:0;color:var(--muted);max-width:900px}
+.today-date{flex-shrink:0;border:1px solid var(--infoLine);background:var(--infoBg);border-radius:12px;padding:10px 14px;min-width:min(100%,200px)}
+.today-date .today-label{display:block;font-size:12px;color:var(--muted);margin-bottom:2px}.today-date .today-value{font-size:16px;font-weight:700;color:var(--text);text-transform:capitalize}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:22px;margin-bottom:20px}.card h2{margin:0 0 5px;font-size:22px}.sub{margin:0 0 18px;color:var(--muted);font-size:14px}
 .info{background:var(--infoBg);border:1px solid var(--infoLine);border-radius:14px;padding:16px;margin-bottom:20px;color:var(--infoText)}.info strong{color:var(--text)}
 .settings{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}.field span{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}
@@ -84,12 +86,18 @@ button,input{font:inherit;font-size:16px}
 <body>
 <div class="wrap">
   <header class="header">
-    <h1>Умный семейный бюджет</h1>
+    <div class="header-top">
+      <h1>Умный семейный бюджет</h1>
+      <div class="today-date" aria-live="polite">
+        <span class="today-label">Сегодня</span>
+        <time id="todayDate" class="today-value" datetime=""></time>
+      </div>
+    </div>
     <p>Деньги переходят из дня в день: 25% каждого дохода сразу уходят в накопления, под обязательные платежи создаются резервы, а дневной лимит считается только из действительно свободных денег.</p>
   </header>
 
   <div class="info">
-    <strong>Как распределяется доход:</strong> ведение бюджета начинается с 1&nbsp;сентября 2026&nbsp;г. При каждом поступлении 25% уходят в накопления, а из оставшихся 75% формируется доля в резерв каждого будущего платежа. Карточка дохода показывает состояние сразу после этого поступления: «было → добавить → стало». До следующего поступления остаётся минимум 10&nbsp;000&nbsp;₽ свободными.
+    <strong>Как распределяется доход:</strong> ведение бюджета начинается с 1&nbsp;сентября 2026&nbsp;г. При каждом поступлении 25% уходят в накопления (неприкосновенны), из 75% сначала обеспечиваются ближайшие обязательства до следующего дохода, затем более поздние — только из излишка сверх безопасного дневного бюджета на жизнь. Карточка дохода: «было → добавить → стало». Free&nbsp;Cash = Cash − Reserved.
   </div>
 
   <section class="card">
@@ -176,12 +184,14 @@ button,input{font:inherit;font-size:16px}
 <!-- Кнопка смены светлой и темной темы. Фиксируется в правом нижнем углу. -->
 <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Переключить тему" title="Светлая или темная тема">🌙</button>
 
+<script src="./budget-core.js"></script>
 <script>
 /* =============================================================
    НАСТРОЙКИ И ДАННЫЕ
    ============================================================= */
 const STORAGE_KEY = 'smartFamilyBudgetV1';
 const THEME_KEY = 'smartFamilyBudgetTheme';
+const Core = window.BudgetCore;
 
 const defaultIncomes = [
   {name:'Основной доход', day:5, amount:0},
@@ -203,23 +213,23 @@ let incomeMonthly = {}; // { '2026-09': { '0': 22000 } } — суммы по м�
 
 function copy(x){return JSON.parse(JSON.stringify(x))}
 function num(x){return Math.max(0, Number(x)||0)}
-function money(value){return Math.round((Number(value)||0)*100)/100}
+function money(value){return Core.fromKop(Core.toKop(value))}
 function rub(x){return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Math.round(Number(x)||0))+' ₽'}
 function esc(x){const d=document.createElement('div');d.textContent=String(x??'');return d.innerHTML}
 
 function isMonthLocked(year, month){
   const now=new Date();
-  const last=dim(year,month);
+  const last=Core.dim(year,month);
   const end=new Date(year,month-1,last,23,59,59,999);
   return end<now;
 }
 function getIncomeAmount(idx,year,month){
-  const mk=monthKey(year,month);
+  const mk=Core.monthKey(year,month);
   if(incomeMonthly[mk]&&incomeMonthly[mk][String(idx)]!=null)return money(num(incomeMonthly[mk][String(idx)]));
   return money(num(incomes[idx]?.amount));
 }
 function setIncomeAmount(idx,year,month,amount){
-  const mk=monthKey(year,month);
+  const mk=Core.monthKey(year,month);
   if(!incomeMonthly[mk])incomeMonthly[mk]={};
   incomeMonthly[mk][String(idx)]=money(amount);
 }
@@ -236,24 +246,23 @@ function dayDate(day){const m=monthInfo();return new Date(m.year,m.month-1,safeD
 function fmtDay(day){return dayDate(day).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}
 function dateToDay(date){if(!date)return null;const d=new Date(date+'T12:00:00');return Number.isNaN(d.getTime())?null:d.getDate()}
 function dateInSelectedMonth(date){return date && date.slice(0,7)===monthInfo().prefix}
-function parseDateParts(dateStr){
-  if(!dateStr)return null;
-  const d=new Date(dateStr+'T12:00:00');
-  if(Number.isNaN(d.getTime()))return null;
-  return {year:d.getFullYear(),month:d.getMonth()+1,day:d.getDate()};
-}
-function addMonths(y,m,delta){
-  const t=new Date(y,m-1+delta,1);
-  return {year:t.getFullYear(),month:t.getMonth()+1};
-}
-function dim(y,m){return new Date(y,m,0).getDate()}
-function monthKey(y,m){return `${y}-${String(m).padStart(2,'0')}`}
-function absKey(y,m,d){return y*10000+m*100+d}
-function fmtAbs(y,m,d){return new Date(y,m-1,d).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}
+function parseDateParts(dateStr){return Core.parseDateParts(dateStr)}
+function addMonths(y,m,delta){return Core.addMonths(y,m,delta)}
+function dim(y,m){return Core.dim(y,m)}
+function monthKey(y,m){return Core.monthKey(y,m)}
+function absKey(y,m,d){return Core.absKey(y,m,d)}
+function fmtAbs(y,m,d){return Core.fmtAbs(y,m,d)}
 function fmtMonthTitle(y,m){return new Date(y,m-1,1).toLocaleDateString('ru-RU',{month:'long',year:'numeric'})}
-function daysBetween(a,b){
-  const t=(new Date(b.year,b.month-1,b.day)-new Date(a.year,a.month-1,a.day))/86400000;
-  return Math.max(1,Math.round(t));
+function daysBetween(a,b){return Core.daysBetween(a,b)}
+
+function currentViewDay(m){
+  const now=new Date();
+  if(now.getFullYear()===m.year && now.getMonth()+1===m.month){
+    return Math.min(now.getDate(), m.days);
+  }
+  // Будущий месяц — смотрим с 1-го; прошлый — с последнего дня
+  if(now.getFullYear()<m.year || (now.getFullYear()===m.year && now.getMonth()+1<m.month)) return 1;
+  return m.days;
 }
 
 /* =============================================================
@@ -339,591 +348,58 @@ function editFixed(i,k,v){fixedExpenses[i][k]=k==='name'?v:num(v);calculate()}
 function editUnexpected(i,k,v){unexpectedExpenses[i][k]=(k==='amount'?num(v):v);calculate()}
 function editDaily(i,k,v){dailyExpenses[i][k]=(k==='amount'?num(v):v);calculate()}
 
-/* ============================================================
-   ФИНАНСОВОЕ ЯДРО — хронологическая симуляция с 01.09.2026
-   ============================================================
-   Единый проход по календарю. Каждый доход — снимок «было →
-   добавить → стало». У каждого экземпляра расхода свой резерв.
-   ============================================================ */
-
-const SAVINGS_RATE = 0.25;
-const MIN_FREE_CASH = 10000;
-const BUDGET_START = { year: 2026, month: 9, day: 1 };
-const BUDGET_START_KEY = absKey(2026, 9, 1);
-
-function monthsFromBudgetStart(selectedMonth) {
-  const start = { year: BUDGET_START.year, month: BUDGET_START.month };
-  const end = addMonths(selectedMonth.year, selectedMonth.month, 2);
-  const selKey = monthKey(selectedMonth.year, selectedMonth.month);
-  const endKey = monthKey(end.year, end.month);
-  const list = [];
-  let cur = { ...start };
-  while (monthKey(cur.year, cur.month) <= endKey) {
-    list.push({
-      year: cur.year,
-      month: cur.month,
-      isSelected: monthKey(cur.year, cur.month) === selKey
-    });
-    cur = addMonths(cur.year, cur.month, 1);
-  }
-  return list;
-}
-
-function buildChronology(openingBalance, incomeRows, fixedRows, onceRows, selectedMonth) {
-  const selKey = monthKey(selectedMonth.year, selectedMonth.month);
-  const months = monthsFromBudgetStart(selectedMonth);
-  const endMonth = months[months.length - 1];
-
-  const incomeEvents = [];
-  months.forEach(({ year, month, isSelected }) => {
-    const days = dim(year, month);
-    incomeRows.forEach((inc, i) => {
-      const amount = getIncomeAmount(i, year, month);
-      if (amount <= 0) return;
-      const day = Math.min(Math.max(1, Math.round(num(inc.day) || 1)), days);
-      const key = absKey(year, month, day);
-      if (key < BUDGET_START_KEY) return;
-      incomeEvents.push({
-        id: `inc-${year}-${month}-${i}`,
-        incomeIndex: i,
-        name: inc.name || 'Доход',
-        year, month, day, key,
-        mKey: monthKey(year, month),
-        amount,
-        isSelectedMonth: isSelected,
-        isFact: isMonthLocked(year, month)
-      });
-    });
-  });
-  incomeEvents.sort((a, b) => a.key - b.key);
-
-  const obligations = [];
-  months.forEach(({ year, month, isSelected }) => {
-    const days = dim(year, month);
-    fixedRows.forEach((fix, i) => {
-      const amount = num(fix.amount);
-      if (amount <= 0) return;
-      const day = Math.min(Math.max(1, Math.round(num(fix.day) || 1)), days);
-      const key = absKey(year, month, day);
-      if (key < BUDGET_START_KEY) return;
-      obligations.push({
-        id: `fix-${i}-${year}-${month}`,
-        fixIndex: i,
-        name: fix.name || 'Постоянный платеж',
-        year, month, day, key,
-        mKey: monthKey(year, month),
-        amount: money(amount),
-        priority: 1,
-        kind: 'Постоянный платеж',
-        isSelectedMonth: isSelected
-      });
-    });
-  });
-
-  onceRows.forEach((o, i) => {
-    const amount = num(o.amount);
-    const parts = parseDateParts(o.date);
-    if (amount <= 0 || !parts) return;
-    const key = absKey(parts.year, parts.month, parts.day);
-    if (key < BUDGET_START_KEY) return;
-    if (monthKey(parts.year, parts.month) > monthKey(endMonth.year, endMonth.month)) return;
-    obligations.push({
-      id: `once-${i}`,
-      name: o.name || 'Крупный расход',
-      year: parts.year, month: parts.month, day: parts.day,
-      key,
-      mKey: monthKey(parts.year, parts.month),
-      amount: money(amount),
-      priority: 2,
-      kind: 'Крупный разовый',
-      isSelectedMonth: monthKey(parts.year, parts.month) === selKey
-    });
-  });
-
-  obligations.sort((a, b) => a.key - b.key || a.priority - b.priority);
-
-  return {
-    incomeEvents,
-    obligations,
-    selKey,
-    openingBalance: money(openingBalance),
-    simEnd: endMonth
-  };
-}
-
-function validateAllocationSnapshots(cards) {
-  const errors = [];
-  cards.forEach(card => {
-    card.allocations.forEach(a => {
-      const sum = money(a.previousReserve + a.amount);
-      if (Math.abs(sum - a.newReserve) > 0.02) {
-        errors.push(`${card.name} · ${a.name}: ${a.previousReserve}+${a.amount}≠${a.newReserve}`);
-      }
-      if (a.newReserve > a.total + 0.02) {
-        errors.push(`${a.name}: резерв ${a.newReserve} > суммы ${a.total}`);
-      }
-    });
-  });
-  return errors;
-}
-
-function runSimulation(chronology, dailyExpenses) {
-  const { incomeEvents, obligations, selKey, openingBalance, simEnd } = chronology;
-  const warnings = [];
-  const history = [];
-  const incomeCards = [];
-  const reserves = {};
-  const paid = new Set();
-  const processedRemaining = new Map();
-
-  let cash = 0;
-  let savings = 0;
-  let totalPaid = 0;
-  let totalSpent = 0;
-  let openingDone = false;
-
-  function getReserve(id) { return money(reserves[id] || 0); }
-  function reservedTotal() { return money(Object.values(reserves).reduce((s, v) => s + v, 0)); }
-  function freeCash() { return money(cash - reservedTotal()); }
-  function addWarning(key, payload) {
-    if (warnings.some(w => w.key === key)) return;
-    warnings.push({ key, ...payload });
-  }
-
-  function nextIncomeKeyAfter(key) {
-    const n = incomeEvents.find(e => e.key > key);
-    return n ? n.key : null;
-  }
-
-  function isDueBeforeNextIncome(ob, incKey, nextKey) {
-    if (ob.key <= incKey) return false;
-    if (nextKey === null) return true;
-    return ob.key < nextKey;
-  }
-
-  function poolRemaining(inc, ob, currentRemaining) {
-    const pool = incomeEvents.filter(e => e.key >= inc.key && e.key <= ob.key);
-    return pool.reduce((sum, p) => {
-      if (p.id === inc.id) return sum + currentRemaining;
-      if (processedRemaining.has(p.id)) return sum + processedRemaining.get(p.id);
-      return sum + money(p.amount * (1 - SAVINGS_RATE));
-    }, 0);
-  }
-
-  function recordAllocation(rawAllocations, ob, prevRes, part, mandatory) {
-    const newRes = money(prevRes + part);
-    reserves[ob.id] = newRes;
-    rawAllocations.push({
-      paymentId: ob.id,
-      name: ob.name,
-      dueYear: ob.year,
-      dueMonth: ob.month,
-      dueDay: ob.day,
-      dueKey: ob.key,
-      amount: part,
-      previousReserve: prevRes,
-      newReserve: newRes,
-      total: ob.amount,
-      kind: ob.kind,
-      targetMonthKey: ob.mKey,
-      mandatory
-    });
-  }
-
-  function trimForMinFree(rawAllocations, remainingHolder, inc) {
-    let remaining = remainingHolder.val;
-    if (remaining >= MIN_FREE_CASH - 0.01) return;
-    let deficit = money(MIN_FREE_CASH - remaining);
-    const byFurthest = rawAllocations
-      .filter(a => !a.mandatory)
-      .sort((a, b) => b.dueKey - a.dueKey);
-    for (const a of byFurthest) {
-      if (deficit <= 0.005) break;
-      const trim = money(Math.min(a.amount, deficit));
-      if (trim <= 0) continue;
-      a.amount = money(a.amount - trim);
-      a.newReserve = money(a.newReserve - trim);
-      reserves[a.paymentId] = money(getReserve(a.paymentId) - trim);
-      remaining = money(remaining + trim);
-      deficit = money(deficit - trim);
-    }
-    remainingHolder.val = remaining;
-    const kept = rawAllocations.filter(a => a.amount > 0.005 || a.mandatory);
-    rawAllocations.splice(0, rawAllocations.length, ...kept.filter(a => a.amount > 0.005));
-    if (remaining < MIN_FREE_CASH - 0.01) {
-      addWarning(`minfree-${inc.id}`, {
-        day: inc.day,
-        monthKey: inc.mKey,
-        message:
-          `После «${inc.name}» свободный остаток ${rub(remaining)} меньше минимальных ${rub(MIN_FREE_CASH)}. ` +
-          `Обязательные платежи до следующего дохода уже обеспечены в приоритете.`
-      });
-    }
-  }
-
-  function processIncome(inc) {
-    const savingsAmt = money(inc.amount * SAVINGS_RATE);
-    const usable = money(inc.amount - savingsAmt);
-    let remaining = usable;
-    savings = money(savings + savingsAmt);
-    cash = money(cash + usable);
-
-    const reserveAtStart = {};
-    obligations.forEach(o => { reserveAtStart[o.id] = getReserve(o.id); });
-
-    const nextKey = nextIncomeKeyAfter(inc.key);
-    const rawAllocations = [];
-
-    const mandatoryObs = obligations
-      .filter(o => !paid.has(o.id) && isDueBeforeNextIncome(o, inc.key, nextKey) && getReserve(o.id) < o.amount - 0.005)
-      .sort((a, b) => a.key - b.key || a.priority - b.priority);
-
-    let mandatoryNeedFromIncome = 0;
-    mandatoryObs.forEach(ob => {
-      mandatoryNeedFromIncome = money(mandatoryNeedFromIncome + money(ob.amount - (reserveAtStart[ob.id] || 0)));
-    });
-
-    mandatoryObs.forEach(ob => {
-      const prevRes = getReserve(ob.id);
-      const need = money(ob.amount - prevRes);
-      if (need <= 0.005 || remaining <= 0.005) return;
-      const part = money(Math.min(need, remaining));
-      remaining = money(remaining - part);
-      recordAllocation(rawAllocations, ob, prevRes, part, true);
-    });
-
-    const mandatoryShortfall = mandatoryObs.reduce((s, ob) => {
-      const gap = money(ob.amount - getReserve(ob.id));
-      return gap > 0.005 ? money(s + gap) : s;
-    }, 0);
-
-    if (mandatoryShortfall > 0.005) {
-      addWarning(`gap-${inc.id}`, {
-        day: inc.day,
-        monthKey: inc.mKey,
-        message:
-          `Недостаточно средств до следующего дохода после «${inc.name}». ` +
-          `Обязательные платежи до следующего дохода: ${rub(mandatoryNeedFromIncome)}. ` +
-          `Доступно для распределения: ${rub(usable)}. ` +
-          `Не хватает: ${rub(mandatoryShortfall)}.`
-      });
-    }
-
-    const optionalObs = obligations
-      .filter(o =>
-        !paid.has(o.id) &&
-        o.key >= inc.key &&
-        !isDueBeforeNextIncome(o, inc.key, nextKey) &&
-        getReserve(o.id) < o.amount - 0.005
-      )
-      .sort((a, b) => a.key - b.key || a.priority - b.priority);
-
-    optionalObs.forEach(ob => {
-      const prevRes = getReserve(ob.id);
-      const need = money(ob.amount - prevRes);
-      const totalRem = poolRemaining(inc, ob, remaining);
-      if (totalRem <= 0.005 || remaining <= 0.005) return;
-
-      let part = money(need * (remaining / totalRem));
-      part = money(Math.min(part, need, remaining));
-      if (part <= 0.005) return;
-
-      remaining = money(remaining - part);
-      recordAllocation(rawAllocations, ob, prevRes, part, false);
-    });
-
-    const remainingHolder = { val: remaining };
-    trimForMinFree(rawAllocations, remainingHolder, inc);
-    remaining = remainingHolder.val;
-    processedRemaining.set(inc.id, remaining);
-
-    const displayItems = obligations
-      .filter(o => !paid.has(o.id) && o.key >= inc.key && (
-        rawAllocations.some(a => a.paymentId === o.id) ||
-        (reserveAtStart[o.id] || 0) > 0.005 ||
-        isDueBeforeNextIncome(o, inc.key, nextKey)
-      ))
-      .sort((a, b) => a.key - b.key || a.priority - b.priority)
-      .map(o => {
-        const alloc = rawAllocations.find(a => a.paymentId === o.id);
-        const prev = money(reserveAtStart[o.id] || 0);
-        const add = alloc ? alloc.amount : 0;
-        const after = alloc ? alloc.newReserve : prev;
-        const mandatory = isDueBeforeNextIncome(o, inc.key, nextKey);
-        const fullyFunded = after >= o.amount - 0.005;
-        return {
-          paymentId: o.id,
-          name: o.name,
-          dueYear: o.year,
-          dueMonth: o.month,
-          dueDay: o.day,
-          dueKey: o.key,
-          previousReserve: prev,
-          amount: money(add),
-          newReserve: money(after),
-          total: o.amount,
-          kind: o.kind,
-          targetMonthKey: o.mKey,
-          remainingToFund: money(Math.max(0, o.amount - after)),
-          fullyFunded,
-          mandatory,
-          dueBeforeNextIncome: mandatory
-        };
-      });
-
-    displayItems.filter(o => o.dueBeforeNextIncome && !o.fullyFunded).forEach(o => {
-      addWarning(`under-${inc.id}-${o.paymentId}`, {
-        day: inc.day,
-        monthKey: inc.mKey,
-        message:
-          `После «${inc.name}» платёж «${o.name}» (${fmtAbs(o.dueYear, o.dueMonth, o.dueDay)}) ` +
-          `не обеспечен полностью: ${rub(o.newReserve)} / ${rub(o.total)}.`
-      });
-    });
-
-    const card = {
-      id: inc.id,
-      type: 'income',
-      name: inc.name,
-      year: inc.year,
-      month: inc.month,
-      day: inc.day,
-      key: inc.key,
-      mKey: inc.mKey,
-      isSelectedMonth: inc.isSelectedMonth,
-      isFact: inc.isFact,
-      gross: inc.amount,
-      savings: savingsAmt,
-      usable,
-      remaining,
-      totalReserve: rawAllocations.reduce((s, a) => s + a.amount, 0),
-      allocations: displayItems,
-      freeCash: freeCash(),
-      nextIncomeKey: nextKey
-    };
-    incomeCards.push(card);
-
-    history.push({
-      type: 'income',
-      year: inc.year,
-      month: inc.month,
-      day: inc.day,
-      key: inc.key,
-      mKey: inc.mKey,
-      name: inc.name,
-      gross: inc.amount,
-      savings: savingsAmt,
-      usable,
-      sourceId: inc.id,
-      allocations: displayItems.map(a => ({ ...a }))
-    });
-
-    displayItems.filter(d => d.amount > 0.005).forEach(d => {
-      history.push({
-        type: 'reserve',
-        year: inc.year,
-        month: inc.month,
-        day: inc.day,
-        key: inc.key,
-        mKey: inc.mKey,
-        name: d.name,
-        amount: d.amount,
-        paymentId: d.paymentId,
-        previousReserve: d.previousReserve,
-        newReserve: d.newReserve,
-        total: d.total,
-        description: `Резерв «${d.name}»: ${rub(d.previousReserve)} + ${rub(d.amount)} = ${rub(d.newReserve)} / ${rub(d.total)}`
-      });
-    });
-  }
-
-  function payObligations(cell) {
-    obligations
-      .filter(o => o.key === cell.key && !paid.has(o.id))
-      .sort((a, b) => a.priority - b.priority)
-      .forEach(payment => {
-        const reserved = getReserve(payment.id);
-        const shortage = money(payment.amount - reserved);
-        if (shortage > 0.005) {
-          addWarning(`pay-${payment.id}`, {
-            day: payment.day,
-            monthKey: payment.mKey,
-            message:
-              `К дате оплаты «${payment.name}» (${fmtAbs(payment.year, payment.month, payment.day)}) ` +
-              `резерв ${rub(reserved)} из ${rub(payment.amount)} — недофинансировано ${rub(shortage)}.`
-          });
-        }
-        cash = money(cash - payment.amount);
-        delete reserves[payment.id];
-        paid.add(payment.id);
-        totalPaid = money(totalPaid + payment.amount);
-        history.push({
-          type: 'payment',
-          year: cell.year,
-          month: cell.month,
-          day: cell.day,
-          key: cell.key,
-          mKey: cell.mKey,
-          name: payment.name,
-          amount: payment.amount
-        });
-      });
-  }
-
-  const { year: endY, month: endM } = simEnd;
-
-  for (const cell of eachDay(BUDGET_START.year, BUDGET_START.month, endY, endM)) {
-    if (cell.key === BUDGET_START_KEY && openingBalance > 0 && !openingDone) {
-      cash = money(cash + openingBalance);
-      openingDone = true;
-      history.push({
-        type: 'opening',
-        year: cell.year,
-        month: cell.month,
-        day: cell.day,
-        key: cell.key,
-        mKey: cell.mKey,
-        name: 'Остаток на 1 сентября 2026',
-        gross: openingBalance,
-        usable: openingBalance
-      });
-    }
-
-    incomeEvents.filter(e => e.key === cell.key).forEach(processIncome);
-    payObligations(cell);
-
-    if (cell.mKey === selKey) {
-      dailyExpenses.filter(e => e.key === cell.key).forEach(expense => {
-        const free = freeCash();
-        if (free >= expense.amount) {
-          cash = money(cash - expense.amount);
-          totalSpent = money(totalSpent + expense.amount);
-          history.push({
-            type: 'daily_expense',
-            year: cell.year,
-            month: cell.month,
-            day: cell.day,
-            key: cell.key,
-            mKey: cell.mKey,
-            name: expense.name,
-            amount: expense.amount
-          });
-        } else {
-          addWarning(`daily-${expense.id}-${cell.key}`, {
-            day: cell.day,
-            monthKey: cell.mKey,
-            message: `«${expense.name}» на ${rub(expense.amount)} превышает свободный остаток ${rub(free)}.`
-          });
-        }
-      });
-
-      const nInc = incomeEvents.find(e => e.mKey === selKey && e.key > cell.key);
-      const days = nInc ? daysBetween(cell, nInc) : Math.max(1, dim(cell.year, cell.month) - cell.day + 1);
-      history.push({
-        type: 'day_end',
-        year: cell.year,
-        month: cell.month,
-        day: cell.day,
-        key: cell.key,
-        mKey: cell.mKey,
-        cash,
-        reserved: reservedTotal(),
-        free: freeCash(),
-        savings,
-        dailyLimit: money(Math.max(0, freeCash()) / days),
-        untilKey: nInc ? nInc.key : null,
-        untilDay: nInc ? nInc.day : null
-      });
-    }
-  }
-
-  const validationErrors = validateAllocationSnapshots(incomeCards);
-  validationErrors.forEach((msg, i) => {
-    addWarning(`validation-${i}`, { message: `Ошибка расчёта: ${msg}` });
-  });
-
-  return {
-    cash: money(cash),
-    savings: money(savings),
-    reserved: reservedTotal(),
-    free: freeCash(),
-    paid: totalPaid,
-    everydaySpent: totalSpent,
-    warnings,
-    history,
-    incomeCards,
-    selKey,
-    chronology,
-    validationErrors
-  };
-}
-
-function* eachDay(fromY, fromM, toY, toM) {
-  let y = fromY, mo = fromM, d = 1;
-  const endK = absKey(toY, toM, dim(toY, toM));
-  while (true) {
-    const maxD = dim(y, mo);
-    for (; d <= maxD; d++) {
-      const cell = { year: y, month: mo, day: d, key: absKey(y, mo, d), mKey: monthKey(y, mo) };
-      yield cell;
-      if (cell.key >= endK) return;
-    }
-    const n = addMonths(y, mo, 1);
-    y = n.year; mo = n.month; d = 1;
-  }
-}
-
 /* =============================================================
-   ИТОГОВЫЙ РАСЧЕТ
+   ФИНАНСОВОЕ ЯДРО — BudgetCore (budget-core.js)
+   Порядок дня: opening → доходы → резервы/просрочки → оплаты → бытовые.
+   Free Cash = Cash − Reserved. Накопления 25% вне Cash.
    ============================================================= */
-function collectDaily(){
-  return dailyExpenses
-    .filter(x=>num(x.amount)>0&&dateInSelectedMonth(x.date))
-    .map((x,i)=>{
-      const p=parseDateParts(x.date);
-      if(!p)return null;
-      return {id:'daily-'+i,name:x.name||'Расход',year:p.year,month:p.month,day:p.day,key:absKey(p.year,p.month,p.day),amount:money(num(x.amount))};
-    }).filter(Boolean);
-}
-
-function snapshotForView(result){
-  const m=monthInfo();
-  const selKey=monthKey(m.year,m.month);
-  const now=new Date();
-  let day=1;
-  if(now.getFullYear()===m.year && now.getMonth()+1===m.month) day=Math.min(now.getDate(), m.days);
-  return result.history.filter(h=>h.type==='day_end' && h.mKey===selKey && h.day===day).pop()
-    || result.history.filter(h=>h.type==='day_end' && h.mKey===selKey).pop();
-}
 
 function calculate(){
+  if(!Core||typeof Core.calculateBudget!=='function'){
+    console.error('BudgetCore не загружен');
+    return;
+  }
   const m=monthInfo();
   const opening=num(document.getElementById('openingBalance').value);
-  const chronology=buildChronology(opening, incomes, fixedExpenses, unexpectedExpenses, m);
-  const result=runSimulation(chronology, collectDaily());
+  const viewDay=currentViewDay(m);
+  const result=Core.calculateBudget({
+    openingBalanceRubles: opening,
+    incomeRows: incomes,
+    getIncomeAmount: getIncomeAmount,
+    fixedRows: fixedExpenses,
+    onceRows: unexpectedExpenses,
+    dailyExpenses: dailyExpenses.filter(x=>num(x.amount)>0&&dateInSelectedMonth(x.date)),
+    selectedMonth: m,
+    viewDay: viewDay,
+    isMonthLocked: isMonthLocked
+  });
 
-  const snap=snapshotForView(result);
-  const mEnd=result.history.filter(h=>h.type==='day_end'&&h.mKey===chronology.selKey).pop();
+  const snap=result.viewSnapshot;
+  const mEnd=result.monthEndSnapshot;
   const free=snap?snap.free:(mEnd?mEnd.free:result.free);
   const daily=snap?snap.dailyLimit:(mEnd?mEnd.dailyLimit:0);
-  const cash=mEnd?mEnd.cash:result.cash;
-  const reserved=mEnd?mEnd.reserved:result.reserved;
-  const savings=mEnd?mEnd.savings:result.savings;
+  const cash=snap?snap.cash:(mEnd?mEnd.cash:result.cash);
+  const reserved=snap?snap.reserved:(mEnd?mEnd.reserved:result.reserved);
+  const savings=snap?snap.savings:(mEnd?mEnd.savings:result.savings);
+  const arrears=snap&&snap.arrearsTotal!=null?snap.arrearsTotal:(result.arrearsTotal||0);
 
   document.getElementById('totalCash').textContent=rub(cash);
   document.getElementById('totalSavings').textContent=rub(savings);
   document.getElementById('totalReserved').textContent=rub(reserved);
   document.getElementById('totalPaid').textContent=rub(
-    result.history.filter(h=>h.type==='payment'&&h.mKey===chronology.selKey).reduce((s,h)=>s+h.amount,0)
+    result.history.filter(h=> (h.type==='payment'||h.type==='arrears_payment') && h.mKey===result.selKey).reduce((s,h)=>s+h.amount,0)
   );
   document.getElementById('totalSpent').textContent='повседневные '+rub(
-    result.history.filter(h=>h.type==='daily_expense'&&h.mKey===chronology.selKey).reduce((s,h)=>s+h.amount,0)
+    result.history.filter(h=>h.type==='daily_expense'&&h.mKey===result.selKey).reduce((s,h)=>s+h.amount,0)
   );
   const freeEl=document.getElementById('totalFree');
-  freeEl.textContent=rub(free);
-  freeEl.className='value '+(free>=0?'green':'red');
+  freeEl.textContent=rub(Math.max(0, free));
+  freeEl.className='value '+(free>0.005?'green':(arrears>0.005||result.deficit>0.005?'red':'green'));
   const until=snap && snap.untilDay ? ' до '+fmtDay(snap.untilDay) : ' до конца месяца';
-  document.getElementById('dailyLimit').textContent=rub(daily)+' в день'+until;
+  const monthEndFree=mEnd?mEnd.free:result.free;
+  document.getElementById('dailyLimit').textContent=
+    rub(daily)+' в день'+until+
+    (mEnd && mEnd.day!== (snap&&snap.day) ? ' · прогноз свободных к концу месяца: '+rub(monthEndFree) : '');
 
   renderPlan(result);
   renderTimeline(result);
@@ -983,20 +459,22 @@ function renderPlan(result){
     const free=src.remaining;
     const daily=snap?snap.dailyLimit:0;
     const until=snap&&snap.untilDay?fmtDay(snap.untilDay):'конца месяца';
-    const minOk=free>=MIN_FREE_CASH-0.01;
+    const ok=free>=0 && !mandatoryFail;
     const factLabel=src.isFact?' <span class="kind">(факт)</span>':'';
     const card=document.createElement('div');
-    card.className='plan'+(warn||!minOk?' warnBorder':'');
+    card.className='plan'+(warn||!ok?' warnBorder':'');
     card.innerHTML=`
       <div class="planTop"><div><h3>${esc(src.name)}${factLabel}</h3><div class="date">${fmtAbs(src.year,src.month,src.day)}</div></div><div class="incomeAmount">${rub(src.gross)}</div></div>
       <div class="lines">
-        <div class="line"><span>Отложить 25%</span><strong>− ${rub(src.savings)}</strong></div>
-        <div class="line"><span>На основном счёте</span><strong>${rub(src.usable)}</strong></div>
-        ${src.totalReserve>0?`<div class="line"><span>В резерв постоянных расходов</span><strong>− ${rub(src.totalReserve)}</strong></div>`:''}
+        <div class="line"><span>Отложить 25% в накопления</span><strong>− ${rub(src.savings)}</strong></div>
+        <div class="line"><span>В бюджет (75%)</span><strong>${rub(src.usable)}</strong></div>
+        ${src.totalReserve>0?`<div class="line"><span>В резерв обязательств</span><strong>− ${rub(src.totalReserve)}</strong></div>`:''}
         <div class="line total"><span>Свободно до следующего дохода</span><strong>${rub(free)}</strong></div>
       </div>
       ${allocHtml}
-      <div class="status ${minOk?'good':'warn'}">${minOk?`До ${until} — около <strong>${rub(daily)} в день</strong>. Минимум ${rub(MIN_FREE_CASH)} свободных сохранён.`:`Свободных ${rub(free)} — меньше минимальных ${rub(MIN_FREE_CASH)}.`}</div>`;
+      <div class="status ${ok?'good':'warn'}">${ok
+        ? `Безопасный дневной лимит до ${until}: <strong>${rub(daily)} в день</strong> (только из свободных денег).`
+        : `Свободных ${rub(free)}. Есть риск недофинансирования ближайших обязательств.`}</div>`;
     root.appendChild(card);
   });
 }
@@ -1007,7 +485,10 @@ function renderTimeline(result){
   const selKey=monthKey(m.year,m.month);
   const events=result.history.filter(h=>h.type!=='day_end' && h.mKey===selKey);
   if(!events.length){root.innerHTML='<div class="empty">После заполнения сумм здесь появится календарь.</div>';return}
-  const labels={income:'Доход',opening:'Остаток',reserve:'Резерв',payment:'Оплата',daily_expense:'Повседневный расход'};
+  const labels={
+    income:'Доход',opening:'Остаток',reserve:'Резерв',payment:'Оплата',
+    daily_expense:'Повседневный расход',arrears:'Просрочка',arrears_payment:'Погашение просрочки'
+  };
   root.innerHTML=events.map(e=>{
     const amount=(e.type==='income'||e.type==='opening')?e.gross:e.amount;
     const positive=e.type==='income'||e.type==='opening';
@@ -1021,16 +502,26 @@ function renderStatus(result, snap, mEnd){
   const hasIncome=(result.incomeCards||[]).some(c=>c.isSelectedMonth&&c.gross>0);
   const free=snap?snap.free:(mEnd?mEnd.free:result.free);
   const daily=snap?snap.dailyLimit:(mEnd?mEnd.dailyLimit:0);
-  const cash=mEnd?mEnd.cash:result.cash;
-  const reserved=mEnd?mEnd.reserved:result.reserved;
-  const savings=mEnd?mEnd.savings:result.savings;
+  const cash=snap?snap.cash:(mEnd?mEnd.cash:result.cash);
+  const reserved=snap?snap.reserved:(mEnd?mEnd.reserved:result.reserved);
+  const savings=snap?snap.savings:(mEnd?mEnd.savings:result.savings);
+  const arrears=result.arrearsTotal||0;
+  const deficit=result.deficit||0;
   if(!hasIncome){box.className='status warn';box.textContent='Введите доходы, чтобы рассчитать свободные деньги.'}
-  else if(free<0){box.className='status bad';box.innerHTML=`Свободных денег нет. Накоплено <strong>${rub(result.savings)}</strong>, в резерве <strong>${rub(result.reserved)}</strong>.`}
-  else{box.className='status good';box.innerHTML=`На счёте <strong>${rub(cash)}</strong>, свободно <strong>${rub(free)}</strong>. Накопления <strong>${rub(savings)}</strong>, резерв <strong>${rub(reserved)}</strong>. Ориентир — <strong>${rub(daily)} в день</strong>. После каждого дохода — минимум <strong>${rub(MIN_FREE_CASH)}</strong> свободными.`}
+  else if(arrears>0.005||free<0){
+    box.className='status bad';
+    box.innerHTML=`Свободных денег нет или есть просрочка <strong>${rub(arrears)}</strong>. Накопления <strong>${rub(savings)}</strong> не расходуются. Дефицит: <strong>${rub(Math.max(deficit,arrears))}</strong>.`;
+  }
+  else{
+    box.className='status good';
+    box.innerHTML=`На счёте <strong>${rub(cash)}</strong> (из них резерв <strong>${rub(reserved)}</strong>), свободно <strong>${rub(free)}</strong>. Накопления <strong>${rub(savings)}</strong>. Текущий безопасный дневной лимит — <strong>${rub(daily)} в день</strong>.`;
+  }
   const uniq=[];const seen=new Set();
   result.warnings.forEach(w=>{const t=w.message||'';if(t&&!seen.has(t)){seen.add(t);uniq.push(t)}});
   const w=document.getElementById('warningBox');
-  w.innerHTML=uniq.length?`<div class="status bad"><strong>Нужно обратить внимание:</strong><ul class="warnings">${uniq.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>`:'<div class="status good">Обязательные платежи до следующего дохода обеспечиваются полностью; более поздние — частями из нескольких поступлений.</div>';
+  w.innerHTML=uniq.length
+    ?`<div class="status bad"><strong>Нужно обратить внимание:</strong><ul class="warnings">${uniq.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>`
+    :'<div class="status good">Обязательства обеспечиваются в хронологическом порядке: сначала ближайшие даты оплаты, затем более поздние. Накопления 25% неприкосновенны.</div>';
 }
 
 /* =============================================================
@@ -1038,6 +529,7 @@ function renderStatus(result, snap, mEnd){
    ============================================================= */
 function saveData(showMessage){
   const data={
+    version:2,
     budgetMonth:document.getElementById('budgetMonth').value,
     openingBalance:document.getElementById('openingBalance').value,
     incomes,fixedExpenses,unexpectedExpenses,dailyExpenses,incomeMonthly
@@ -1054,11 +546,35 @@ function loadData(){
     const d=JSON.parse(raw);
     if(d.budgetMonth)document.getElementById('budgetMonth').value=d.budgetMonth;
     if(d.openingBalance!=null)document.getElementById('openingBalance').value=d.openingBalance;
-    if(Array.isArray(d.incomes))incomes=d.incomes;
-    if(Array.isArray(d.fixedExpenses))fixedExpenses=d.fixedExpenses;
-    if(Array.isArray(d.unexpectedExpenses))unexpectedExpenses=d.unexpectedExpenses;
-    if(Array.isArray(d.dailyExpenses))dailyExpenses=d.dailyExpenses;
-    if(d.incomeMonthly&&typeof d.incomeMonthly==='object')incomeMonthly=d.incomeMonthly;
+    if(Array.isArray(d.incomes))incomes=d.incomes.map(x=>({
+      name:String(x.name||'Доход'),
+      day:num(x.day)||1,
+      amount:money(num(x.amount))
+    }));
+    if(Array.isArray(d.fixedExpenses))fixedExpenses=d.fixedExpenses.map(x=>({
+      name:String(x.name||'Расход'),
+      day:num(x.day)||1,
+      amount:money(num(x.amount))
+    }));
+    if(Array.isArray(d.unexpectedExpenses))unexpectedExpenses=d.unexpectedExpenses.map(x=>({
+      name:String(x.name||'Крупный расход'),
+      date:x.date||'',
+      amount:money(num(x.amount))
+    }));
+    if(Array.isArray(d.dailyExpenses))dailyExpenses=d.dailyExpenses.map(x=>({
+      name:String(x.name||'Расход'),
+      date:x.date||'',
+      amount:money(num(x.amount))
+    }));
+    if(d.incomeMonthly&&typeof d.incomeMonthly==='object'){
+      incomeMonthly={};
+      Object.keys(d.incomeMonthly).forEach(mk=>{
+        incomeMonthly[mk]={};
+        Object.keys(d.incomeMonthly[mk]||{}).forEach(idx=>{
+          incomeMonthly[mk][idx]=money(num(d.incomeMonthly[mk][idx]));
+        });
+      });
+    }
   }catch(e){console.error('Ошибка загрузки данных',e)}
 }
 
@@ -1085,11 +601,33 @@ function toggleTheme(){
   applyTheme(now);
 }
 
+function formatToday(date){
+  return date.toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+}
+function toIsoDate(date){
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+}
+function updateTodayDate(){
+  const el=document.getElementById('todayDate');
+  if(!el)return;
+  const now=new Date();
+  el.textContent=formatToday(now);
+  el.setAttribute('datetime',toIsoDate(now));
+}
+function scheduleTodayDateRefresh(){
+  updateTodayDate();
+  const now=new Date();
+  const next=new Date(now.getFullYear(),now.getMonth(),now.getDate()+1,0,0,1);
+  setTimeout(scheduleTodayDateRefresh,Math.max(1000,next-now));
+}
+
 function renderAll(){renderIncomes();renderFixed();renderUnexpected();renderDaily();calculate()}
 document.getElementById('budgetMonth').addEventListener('change',calculate);
 document.getElementById('openingBalance').addEventListener('input',calculate);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)updateTodayDate()});
 applyTheme(localStorage.getItem(THEME_KEY)==='dark'?'dark':'light');
 loadData();renderAll();
+scheduleTodayDateRefresh();
 
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('./sw.js').catch(function(){});
